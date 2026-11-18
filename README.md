@@ -6,7 +6,7 @@ Một ứng dụng chat trực tuyến đơn giản theo thời gian thực (Rea
 
 | Thành phần | Công nghệ |
 | --- | --- |
-| Backend | C# (.NET 8 / ASP.NET Core SignalR) |
+| Backend | C# (.NET 8.0 / ASP.NET Core SignalR) |
 | Frontend | React 19 + Vite + SignalR Client SDK |
 | Realtime / voice | SignalR signaling + WebRTC mesh audio |
 | Lưu media | MongoDB GridFS |

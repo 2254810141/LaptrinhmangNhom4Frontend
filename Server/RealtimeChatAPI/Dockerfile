@@ -15,7 +15,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
 COPY --from=build /app/out .
 
-# Render forwards requests to PORT; 8080 is the .NET container default.
+# Expose the port your application listens on
 EXPOSE 8080
 
 # Define the entry point for the application
