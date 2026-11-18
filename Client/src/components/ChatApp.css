@@ -1353,6 +1353,78 @@ button {
   font-size: 10px;
 }
 
+.message-reactions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.reaction-summary,
+.add-reaction-button {
+  min-width: 30px;
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.42);
+  color: #e5e7eb;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.reaction-summary.mine {
+  border-color: rgba(196, 181, 253, 0.72);
+  background: rgba(124, 92, 224, 0.24);
+}
+
+.add-reaction-button {
+  width: 25px;
+  min-width: 25px;
+  font-weight: 800;
+  opacity: 0.72;
+}
+
+.message-reactions:hover .add-reaction-button,
+.add-reaction-button:focus-visible {
+  opacity: 1;
+}
+
+.reaction-picker {
+  position: absolute;
+  z-index: 20;
+  bottom: 31px;
+  left: 0;
+  display: flex;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: #202938;
+  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.35);
+}
+
+.reaction-picker button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  font-size: 20px;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.reaction-picker button:hover {
+  transform: scale(1.18);
+  background: rgba(148, 163, 184, 0.14);
+}
+
 .message.mine .message-timestamp {
   color: rgba(235, 228, 255, 0.65);
 }

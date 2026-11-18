@@ -1,3 +1,4 @@
+using MongoDB.Bson;
 using MongoDB.Driver;
 using RealtimeChatAPI.Models;
 
@@ -13,6 +14,7 @@ namespace RealtimeChatAPI.Services
         Task UpsertRoomMemberAsync(string roomId, string nickname);
         Task UpdateMemberLastSeenAsync(string roomId, string nickname);
         Task UpdateMemberAvatarAsync(string roomId, string nickname, string avatar);
+        Task<List<ChatReaction>> ToggleMessageReactionAsync(string roomId, string messageId, string nickname, string emoji);
     }
 
     public class ChatService : IChatService
@@ -65,7 +67,46 @@ namespace RealtimeChatAPI.Services
         public async Task SaveMessageAsync(ChatMessage message)
         {
             message.Timestamp = DateTime.UtcNow;
+            message.MessageId = ObjectId.GenerateNewId().ToString();
+            message.Id = ObjectId.Parse(message.MessageId);
             await _messagesCollection.InsertOneAsync(message);
+        }
+
+        public async Task<List<ChatReaction>> ToggleMessageReactionAsync(
+            string roomId,
+            string messageId,
+            string nickname,
+            string emoji)
+        {
+            var filter = Builders<ChatMessage>.Filter
+                .Eq(message => message.RoomId, roomId)
+                & Builders<ChatMessage>.Filter.Eq(message => message.MessageId, messageId);
+
+            var message = await _messagesCollection.Find(filter).FirstOrDefaultAsync();
+            if (message == null)
+            {
+                throw new ArgumentException("Tin nhắn không tồn tại.", nameof(messageId));
+            }
+
+            var existingReaction = message.Reactions.FirstOrDefault(reaction =>
+                reaction.Nickname == nickname && reaction.Emoji == emoji);
+
+            if (existingReaction != null)
+            {
+                message.Reactions.Remove(existingReaction);
+            }
+            else
+            {
+                message.Reactions.Add(new ChatReaction
+                {
+                    Nickname = nickname,
+                    Emoji = emoji,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+
+            await _messagesCollection.ReplaceOneAsync(filter, message);
+            return message.Reactions;
         }
 
         public async Task<ChatRoom> GetOrCreateRoomAsync(string roomId)

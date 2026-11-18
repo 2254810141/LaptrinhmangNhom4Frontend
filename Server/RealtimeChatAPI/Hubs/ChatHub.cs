@@ -177,12 +177,46 @@ namespace RealtimeChatAPI.Hubs
             // Broadcast to all clients in room
             await Clients.Group(roomId).SendAsync("ReceiveMessage", new
             {
+                messageId = message.MessageId,
                 nickname = message.Nickname,
                 content = message.Content,
-                timestamp = message.Timestamp
+                timestamp = message.Timestamp,
+                reactions = message.Reactions
             });
 
             Console.WriteLine($"Message from {nickname} in {roomId}: {content}");
+        }
+
+        public async Task ToggleReaction(string roomId, string messageId, string nickname, string emoji)
+        {
+            var allowedEmojis = new HashSet<string> { "👍", "❤️", "😂", "😮", "😢", "🎉" };
+            if (string.IsNullOrWhiteSpace(roomId)
+                || string.IsNullOrWhiteSpace(messageId)
+                || string.IsNullOrWhiteSpace(nickname)
+                || !allowedEmojis.Contains(emoji))
+            {
+                throw new HubException("Reaction không hợp lệ.");
+            }
+
+            bool isRoomMember;
+            lock (_lock)
+            {
+                isRoomMember = _onlineUsers.TryGetValue(roomId, out var users)
+                    && users.TryGetValue(Context.ConnectionId, out var joinedNickname)
+                    && joinedNickname == nickname;
+            }
+
+            if (!isRoomMember)
+            {
+                throw new HubException("Bạn cần tham gia phòng chat để thả cảm xúc.");
+            }
+
+            var reactions = await _chatService.ToggleMessageReactionAsync(roomId, messageId, nickname, emoji);
+            await Clients.Group(roomId).SendAsync("ReactionUpdated", new
+            {
+                messageId,
+                reactions
+            });
         }
 
         public async Task LeaveRoom(string roomId, string nickname)

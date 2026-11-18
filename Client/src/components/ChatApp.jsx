@@ -3,6 +3,7 @@ import * as signalR from '@microsoft/signalr'
 import './ChatApp.css'
 
 const FORMATTED_MESSAGE_PREFIX = '[[chat-format-v1]]'
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉']
 
 function readFormattedMessage(content) {
   if (!content || !content.startsWith(FORMATTED_MESSAGE_PREFIX)) {
@@ -94,6 +95,7 @@ function ChatApp() {
   const [showQuickSettings, setShowQuickSettings] = useState(false)
   const [showRoomMenu, setShowRoomMenu] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [activeReactionPicker, setActiveReactionPicker] = useState(null)
   const [showFormatting, setShowFormatting] = useState(false)
   const [showMobileSidebar, setShowMobileSidebar] = useState(false)
   const [textFormat, setTextFormat] = useState({
@@ -191,12 +193,14 @@ function ChatApp() {
           setMessages((prev) => [
             ...prev,
             {
+              messageId: data.messageId,
               nickname: data.nickname,
               content: parsedMessage.text,
               style: parsedMessage.style,
               timestamp: data.timestamp,
               type: 'message',
               isMine: data.nickname === currentNickname,
+              reactions: data.reactions || [],
             },
           ])
           setKnownMembers((prev) => rememberMember(prev, data.nickname, data.timestamp))
@@ -208,15 +212,25 @@ function ChatApp() {
               const parsedMessage = readFormattedMessage(msg.content)
               return {
                 ...msg,
+                messageId: msg.messageId || msg.MessageId,
                 content: parsedMessage.text,
                 style: parsedMessage.style,
                 type: 'message',
                 isMine: msg.nickname === currentNickname,
+                reactions: msg.reactions || msg.Reactions || [],
               }
             }),
           )
           setKnownMembers((prev) =>
             history.reduce((members, message) => rememberMember(members, message.nickname, message.timestamp), prev),
+          )
+        })
+
+        newConnection.on('ReactionUpdated', ({ messageId, reactions }) => {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.messageId === messageId ? { ...message, reactions: reactions || [] } : message,
+            ),
           )
         })
 
@@ -362,6 +376,17 @@ function ChatApp() {
       setShowEmojiPicker(false)
     } catch (error) {
       console.error('Error sending message:', error)
+    }
+  }
+
+  const handleToggleReaction = async (messageId, emoji) => {
+    if (!connection || !messageId) return
+
+    try {
+      await connection.invoke('ToggleReaction', roomId, messageId, currentNickname, emoji)
+      setActiveReactionPicker(null)
+    } catch (error) {
+      console.error('Error toggling reaction:', error)
     }
   }
 
@@ -832,6 +857,57 @@ function ChatApp() {
                       {msg.content}
                     </div>
                     <div className="message-timestamp">{formatTime(msg.timestamp)}</div>
+                    <div className="message-reactions">
+                      {REACTION_EMOJIS.map((emoji) => {
+                        const matchingReactions = (msg.reactions || []).filter((reaction) =>
+                          (reaction.emoji || reaction.Emoji) === emoji,
+                        )
+                        if (matchingReactions.length === 0) return null
+
+                        const hasMine = matchingReactions.some((reaction) =>
+                          (reaction.nickname || reaction.Nickname) === currentNickname,
+                        )
+                        return (
+                          <button
+                            key={emoji}
+                            className={`reaction-summary ${hasMine ? 'mine' : ''}`}
+                            type="button"
+                            onClick={() => handleToggleReaction(msg.messageId, emoji)}
+                            title={matchingReactions
+                              .map((reaction) => reaction.nickname || reaction.Nickname)
+                              .join(', ')}
+                          >
+                            <span>{emoji}</span>
+                            <span>{matchingReactions.length}</span>
+                          </button>
+                        )
+                      })}
+                      <button
+                        className="add-reaction-button"
+                        type="button"
+                        onClick={() =>
+                          setActiveReactionPicker((current) => current === msg.messageId ? null : msg.messageId)
+                        }
+                        aria-label="Thả cảm xúc"
+                        aria-expanded={activeReactionPicker === msg.messageId}
+                      >
+                        +
+                      </button>
+                      {activeReactionPicker === msg.messageId && (
+                        <div className="reaction-picker" role="menu" aria-label="Chọn cảm xúc">
+                          {REACTION_EMOJIS.map((emoji) => (
+                            <button
+                              key={emoji}
+                              type="button"
+                              role="menuitem"
+                              onClick={() => handleToggleReaction(msg.messageId, emoji)}
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               ),
