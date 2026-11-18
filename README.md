@@ -8,7 +8,8 @@ Một ứng dụng chat trực tuyến đơn giản theo thời gian thực (Rea
 | --- | --- |
 | Backend | C# (.NET 8.0 / ASP.NET Core SignalR) |
 | Frontend | React 19 + Vite + SignalR Client SDK |
-| Giao thức truyền tải | WebSocket (SignalR tự động quản lý kết nối ở tầng ứng dụng - L7) |
+| Realtime / voice | SignalR signaling + WebRTC mesh audio |
+| Lưu media | MongoDB GridFS |
 
 ## 1. Định hướng làm đề tài của nhóm là gì
 
@@ -16,7 +17,12 @@ Một ứng dụng chat trực tuyến đơn giản theo thời gian thực (Rea
 
 - 👤 Tham gia phòng chat chung: Người dùng chỉ cần nhập Tên hiển thị (Nickname) để bắt đầu trò chuyện.
 - 💬 Chat Realtime: Gửi và nhận tin nhắn tức thì cho tất cả mọi người đang online trong phòng.
+- 🖼️ Gửi ảnh: Tải ảnh PNG, JPG, GIF hoặc WebP (tối đa 5 MB) lên MongoDB GridFS và chia sẻ trong phòng chat.
+- 🎧 Tin nhắn thoại: Ghi âm tối đa 2 phút, gửi và phát lại trong phòng chat; lưu trên MongoDB GridFS (tối đa 10 MB).
+- 🎙️ Voice chat: Tham gia/rời kênh thoại, tắt/bật microphone và truyền âm thanh WebRTC trực tiếp giữa các thành viên; SignalR chỉ trao đổi tín hiệu kết nối.
 - ⏰ Thời gian gửi: Hiển thị mốc thời gian (Timestamp) dưới mỗi tin nhắn.
+
+Voice chat dùng kết nối mesh và STUN công khai, phù hợp với nhóm nhỏ. Trình duyệt cần quyền microphone và chạy trên HTTPS (localhost được phép). STUN không chuyển tiếp âm thanh; một số mạng cần cấu hình TURN để voice chat kết nối được.
 
 ## 2. Các Project tham khảo + Link GitHub của các project đó
 
