@@ -9,6 +9,7 @@ Một ứng dụng chat trực tuyến đơn giản theo thời gian thực (Rea
 | Backend | C# (.NET 10.0 / ASP.NET Core SignalR) |
 | Frontend | React 19 + Vite + SignalR Client SDK |
 | Giao thức truyền tải | WebSocket (SignalR tự động quản lý kết nối ở tầng ứng dụng - L7) |
+| Lưu ảnh | MongoDB GridFS |
 
 ## 1. Định hướng làm đề tài của nhóm là gì
 
@@ -16,6 +17,7 @@ Một ứng dụng chat trực tuyến đơn giản theo thời gian thực (Rea
 
 - 👤 Tham gia phòng chat chung: Người dùng chỉ cần nhập Tên hiển thị (Nickname) để bắt đầu trò chuyện.
 - 💬 Chat Realtime: Gửi và nhận tin nhắn tức thì cho tất cả mọi người đang online trong phòng.
+- 🖼️ Gửi ảnh: Tải ảnh PNG, JPG, GIF hoặc WebP (tối đa 5 MB) lên MongoDB GridFS và chia sẻ trong phòng chat.
 - ⏰ Thời gian gửi: Hiển thị mốc thời gian (Timestamp) dưới mỗi tin nhắn.
 
 ## 2. Các Project tham khảo + Link GitHub của các project đó

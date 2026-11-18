@@ -4,6 +4,8 @@ import './ChatApp.css'
 
 const FORMATTED_MESSAGE_PREFIX = '[[chat-format-v1]]'
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉']
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
+const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
 function readFormattedMessage(content) {
   if (!content || !content.startsWith(FORMATTED_MESSAGE_PREFIX)) {
@@ -95,6 +97,8 @@ function ChatApp() {
   const [showQuickSettings, setShowQuickSettings] = useState(false)
   const [showRoomMenu, setShowRoomMenu] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [isUploadingImage, setIsUploadingImage] = useState(false)
+  const [imageUploadError, setImageUploadError] = useState('')
   const [activeReactionPicker, setActiveReactionPicker] = useState(null)
   const [showFormatting, setShowFormatting] = useState(false)
   const [showMobileSidebar, setShowMobileSidebar] = useState(false)
@@ -108,10 +112,16 @@ function ChatApp() {
   const [currentTime, setCurrentTime] = useState(() => Date.now())
 
   const avatarInputRef = useRef(null)
+  const imageInputRef = useRef(null)
   const messagesEndRef = useRef(null)
 
   const roomId = roomInfo.roomId
+<<<<<<< Updated upstream
   const signalRUrl = import.meta.env.VITE_SIGNALR_URL || `http://${window.location.hostname}:5000/chathub`
+=======
+  const signalRUrl = import.meta.env.VITE_SIGNALR_URL || 'http://localhost:5000/chathub'
+  const apiBaseUrl = signalRUrl.replace(/\/chathub\/?$/i, '')
+>>>>>>> Stashed changes
 
   const roomLabel = useMemo(() => roomInfo.displayName || 'Phòng chat', [roomInfo.displayName])
   const onlineMemberNames = useMemo(() => new Set(onlineUsers.map((user) => user.nickname)), [onlineUsers])
@@ -198,6 +208,8 @@ function ChatApp() {
               content: parsedMessage.text,
               style: parsedMessage.style,
               timestamp: data.timestamp,
+              messageType: data.messageType || 'text',
+              imageId: data.imageId || null,
               type: 'message',
               isMine: data.nickname === currentNickname,
               reactions: data.reactions || [],
@@ -215,6 +227,8 @@ function ChatApp() {
                 messageId: msg.messageId || msg.MessageId,
                 content: parsedMessage.text,
                 style: parsedMessage.style,
+                messageType: msg.messageType || msg.MessageType || 'text',
+                imageId: msg.imageId || msg.ImageId || null,
                 type: 'message',
                 isMine: msg.nickname === currentNickname,
                 reactions: msg.reactions || msg.Reactions || [],
@@ -376,6 +390,57 @@ function ChatApp() {
       setShowEmojiPicker(false)
     } catch (error) {
       console.error('Error sending message:', error)
+    }
+  }
+
+  const handleImageChange = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    setImageUploadError('')
+
+    if (!file) return
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setImageUploadError('Chỉ hỗ trợ ảnh PNG, JPG, GIF hoặc WebP.')
+      return
+    }
+    if (file.size > MAX_IMAGE_SIZE_BYTES) {
+      setImageUploadError('Ảnh phải nhỏ hơn hoặc bằng 5 MB.')
+      return
+    }
+    if (!connection || !isConnected) {
+      setImageUploadError('Chat chưa kết nối. Vui lòng thử lại sau.')
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      setIsUploadingImage(true)
+      const response = await fetch(`${apiBaseUrl}/api/images`, {
+        method: 'POST',
+        body: formData,
+      })
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || result.title || 'Không thể tải ảnh lên.')
+      }
+
+      await connection.invoke(
+        'SendImageMessage',
+        roomId,
+        currentNickname,
+        result.id,
+        messageInput.trim(),
+      )
+      setMessageInput('')
+      setShowEmojiPicker(false)
+    } catch (error) {
+      console.error('Error uploading image:', error)
+      setImageUploadError(error instanceof Error ? error.message : 'Không thể tải ảnh lên.')
+    } finally {
+      setIsUploadingImage(false)
     }
   }
 
@@ -854,7 +919,19 @@ function ChatApp() {
                       <div className="message-nickname">{msg.nickname}</div>
                     </div>
                     <div className="message-content" style={msg.style || undefined}>
-                      {msg.content}
+                      {msg.messageType === 'image' && msg.imageId ? (
+                        <img
+                          className="message-image"
+                          src={`${apiBaseUrl}/api/images/${encodeURIComponent(msg.imageId)}`}
+                          alt={`Ảnh được gửi bởi ${msg.nickname}`}
+                          loading="lazy"
+                        />
+                      ) : null}
+                      {msg.content && (
+                        <div className={msg.messageType === 'image' ? 'image-caption' : undefined}>
+                          {msg.content}
+                        </div>
+                      )}
                     </div>
                     <div className="message-timestamp">{formatTime(msg.timestamp)}</div>
                     <div className="message-reactions">
@@ -916,6 +993,15 @@ function ChatApp() {
           </div>
 
           <div className="composer-wrap">
+            <input
+              ref={imageInputRef}
+              className="visually-hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              onChange={handleImageChange}
+            />
+            {isUploadingImage && <div className="image-upload-status" role="status">Đang tải ảnh lên...</div>}
+            {imageUploadError && <div className="image-upload-error" role="alert">{imageUploadError}</div>}
             {(showFormatting || messageInput.length > 0) && (
               <div className="formatting-toolbar" aria-label="Định dạng tin nhắn">
                 <label className="color-picker-control" title="Màu chữ">
@@ -1006,6 +1092,16 @@ function ChatApp() {
             )}
 
             <div className="input-area">
+              <button
+                className="composer-tool-button"
+                type="button"
+                aria-label="Tải ảnh lên"
+                title="Tải ảnh lên (tối đa 5 MB)"
+                disabled={isUploadingImage || !isConnected}
+                onClick={() => imageInputRef.current?.click()}
+              >
+                📎
+              </button>
               <button
                 className={`composer-tool-button ${showEmojiPicker ? 'active' : ''}`}
                 type="button"

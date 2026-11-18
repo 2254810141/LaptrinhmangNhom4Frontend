@@ -1,3 +1,4 @@
+using MongoDB.Bson;
 using Microsoft.AspNetCore.SignalR;
 using RealtimeChatAPI.Models;
 using RealtimeChatAPI.Services;
@@ -185,6 +186,49 @@ namespace RealtimeChatAPI.Hubs
             });
 
             Console.WriteLine($"Message from {nickname} in {roomId}: {content}");
+        }
+
+        public async Task SendImageMessage(string roomId, string nickname, string imageId, string? caption)
+        {
+            bool isRoomMember;
+            lock (_lock)
+            {
+                isRoomMember = _onlineUsers.TryGetValue(roomId, out var users)
+                    && users.TryGetValue(Context.ConnectionId, out var joinedNickname)
+                    && joinedNickname == nickname;
+            }
+
+            if (!isRoomMember)
+            {
+                throw new HubException("Bạn cần tham gia phòng chat để gửi ảnh.");
+            }
+
+            if (!ObjectId.TryParse(imageId, out _))
+            {
+                throw new HubException("Ảnh không hợp lệ.");
+            }
+
+            var message = new ChatMessage
+            {
+                Nickname = nickname,
+                Content = caption?.Trim() ?? string.Empty,
+                MessageType = "image",
+                ImageId = imageId,
+                RoomId = roomId
+            };
+
+            await _chatService.SaveMessageAsync(message);
+
+            await Clients.Group(roomId).SendAsync("ReceiveMessage", new
+            {
+                messageId = message.MessageId,
+                nickname = message.Nickname,
+                content = message.Content,
+                messageType = message.MessageType,
+                imageId = message.ImageId,
+                timestamp = message.Timestamp,
+                reactions = message.Reactions
+            });
         }
 
         public async Task ToggleReaction(string roomId, string messageId, string nickname, string emoji)

@@ -3,6 +3,7 @@ using MongoDB.Bson.Serialization.Attributes;
 
 namespace RealtimeChatAPI.Models
 {
+    [BsonIgnoreExtraElements]
     public class ChatMessage
     {
         [BsonId]
@@ -16,6 +17,12 @@ namespace RealtimeChatAPI.Models
 
         [BsonElement("content")]
         public string Content { get; set; } = string.Empty;
+
+        [BsonElement("messageType")]
+        public string MessageType { get; set; } = "text";
+
+        [BsonElement("imageId")]
+        public string? ImageId { get; set; }
 
         [BsonElement("timestamp")]
         public DateTime Timestamp { get; set; }
