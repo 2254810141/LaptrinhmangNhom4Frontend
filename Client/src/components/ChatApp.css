@@ -1207,6 +1207,62 @@ button {
   gap: 8px;
 }
 
+.voice-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-join-button,
+.voice-mute-button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  border-radius: 9px;
+  background: rgba(139, 92, 246, 0.12);
+  color: #d8ccff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.voice-join-button:hover:not(:disabled),
+.voice-mute-button:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.22);
+}
+
+.voice-join-button.active {
+  border-color: rgba(57, 217, 138, 0.3);
+  background: rgba(57, 217, 138, 0.1);
+  color: #a4e8c2;
+}
+
+.voice-join-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.voice-mute-button.muted {
+  border-color: rgba(251, 113, 133, 0.3);
+  background: rgba(251, 113, 133, 0.1);
+  color: #fda4af;
+}
+
+.voice-participant-count {
+  color: #a4e8c2;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.voice-error {
+  padding: 8px 18px;
+  background: rgba(251, 113, 133, 0.1);
+  color: #fda4af;
+  font-size: 12px;
+}
+
 .room-chip {
   display: inline-flex;
   align-items: center;
@@ -1364,6 +1420,21 @@ button {
   margin-top: 6px;
 }
 
+.audio-message {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: min(100%, 340px);
+  color: #aeb8c6;
+  font-size: 11px;
+}
+
+.message-audio {
+  width: 100%;
+  min-width: 220px;
+  height: 38px;
+}
+
 .message-timestamp {
   margin-top: 5px;
   color: #818d9d;
@@ -1484,6 +1555,22 @@ button {
 
 .image-upload-error {
   color: #f87171;
+}
+
+.audio-recording-status {
+  padding: 8px 0 0;
+  color: #fda4af;
+  font-size: 12px;
+}
+
+.audio-record-button.recording {
+  border-color: rgba(251, 113, 133, 0.38);
+  background: rgba(251, 113, 133, 0.16);
+  color: #fda4af;
+}
+
+.audio-record-button.recording:hover:not(:disabled) {
+  background: rgba(251, 113, 133, 0.25);
 }
 
 .formatting-toolbar {

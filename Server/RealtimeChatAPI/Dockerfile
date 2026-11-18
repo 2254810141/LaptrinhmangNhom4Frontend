@@ -15,7 +15,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
 COPY --from=build /app/out .
 
-# Set PORT=8080 in the Render service environment.
+# Render forwards requests to PORT; 8080 is the .NET container default.
 EXPOSE 8080
 
 # Define the entry point for the application

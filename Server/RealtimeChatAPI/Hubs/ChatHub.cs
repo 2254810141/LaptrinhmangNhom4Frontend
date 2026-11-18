@@ -2,6 +2,7 @@ using MongoDB.Bson;
 using Microsoft.AspNetCore.SignalR;
 using RealtimeChatAPI.Models;
 using RealtimeChatAPI.Services;
+using System.Text.Json;
 
 namespace RealtimeChatAPI.Hubs
 {
@@ -10,6 +11,7 @@ namespace RealtimeChatAPI.Hubs
         private readonly IChatService _chatService;
         private static readonly object _lock = new();
         private static readonly Dictionary<string, Dictionary<string, string>> _onlineUsers = new();
+        private static readonly Dictionary<string, Dictionary<string, string>> _voiceParticipants = new();
 
 
         public ChatHub(IChatService chatService)
@@ -27,9 +29,23 @@ namespace RealtimeChatAPI.Hubs
         {
             List<(string RoomId, string Nickname)> usersToUpdate = new();
             List<string> roomsToBroadcast = new();
+            List<string> voiceRoomsToBroadcast = new();
 
             lock (_lock)
             {
+                foreach (var room in _voiceParticipants.Keys.ToList())
+                {
+                    if (_voiceParticipants[room].Remove(Context.ConnectionId))
+                    {
+                        voiceRoomsToBroadcast.Add(room);
+                    }
+
+                    if (_voiceParticipants[room].Count == 0)
+                    {
+                        _voiceParticipants.Remove(room);
+                    }
+                }
+
                 foreach (var room in _onlineUsers.Keys.ToList())
                 {
                     if (_onlineUsers[room].Remove(Context.ConnectionId, out var nickname))
@@ -62,6 +78,11 @@ namespace RealtimeChatAPI.Hubs
             foreach (var room in roomsToBroadcast)
             {
                 await Clients.Group(room).SendAsync("UpdateOnlineUsers", GetOnlineUsers(room));
+            }
+
+            foreach (var room in voiceRoomsToBroadcast)
+            {
+                await Clients.Group(room).SendAsync("VoiceUserLeft", Context.ConnectionId);
             }
 
             await base.OnDisconnectedAsync(exception);
@@ -231,6 +252,52 @@ namespace RealtimeChatAPI.Hubs
             });
         }
 
+        public async Task SendAudioMessage(string roomId, string nickname, string audioId, int durationSeconds)
+        {
+            bool isRoomMember;
+            lock (_lock)
+            {
+                isRoomMember = _onlineUsers.TryGetValue(roomId, out var users)
+                    && users.TryGetValue(Context.ConnectionId, out var joinedNickname)
+                    && joinedNickname == nickname;
+            }
+
+            if (!isRoomMember)
+            {
+                throw new HubException("Bạn cần tham gia phòng chat để gửi tin nhắn thoại.");
+            }
+
+            if (!ObjectId.TryParse(audioId, out _)
+                || durationSeconds is < 1 or > 120)
+            {
+                throw new HubException("Tin nhắn thoại không hợp lệ hoặc vượt quá 2 phút.");
+            }
+
+            var message = new ChatMessage
+            {
+                Nickname = nickname,
+                Content = string.Empty,
+                MessageType = "audio",
+                AudioId = audioId,
+                DurationSeconds = durationSeconds,
+                RoomId = roomId
+            };
+
+            await _chatService.SaveMessageAsync(message);
+
+            await Clients.Group(roomId).SendAsync("ReceiveMessage", new
+            {
+                messageId = message.MessageId,
+                nickname = message.Nickname,
+                content = message.Content,
+                messageType = message.MessageType,
+                audioId = message.AudioId,
+                durationSeconds = message.DurationSeconds,
+                timestamp = message.Timestamp,
+                reactions = message.Reactions
+            });
+        }
+
         public async Task ToggleReaction(string roomId, string messageId, string nickname, string emoji)
         {
             var allowedEmojis = new HashSet<string> { "👍", "❤️", "😂", "😮", "😢", "🎉" };
@@ -265,6 +332,7 @@ namespace RealtimeChatAPI.Hubs
 
         public async Task LeaveRoom(string roomId, string nickname)
         {
+            await LeaveVoiceRoom(roomId);
             await Groups.RemoveFromGroupAsync(Context.ConnectionId, roomId);
 
             bool removed = false;
@@ -293,6 +361,94 @@ namespace RealtimeChatAPI.Hubs
                 });
                 await Clients.Group(roomId).SendAsync("NotifyUserLeft", nickname);
             }
+        }
+
+        public async Task JoinVoiceRoom(string roomId)
+        {
+            List<object> participants;
+            string nickname;
+
+            lock (_lock)
+            {
+                if (!_onlineUsers.TryGetValue(roomId, out var roomMembers)
+                    || !roomMembers.TryGetValue(Context.ConnectionId, out nickname!))
+                {
+                    throw new HubException("Bạn cần tham gia phòng chat trước khi vào voice chat.");
+                }
+
+                if (!_voiceParticipants.TryGetValue(roomId, out var voiceMembers))
+                {
+                    voiceMembers = new Dictionary<string, string>();
+                    _voiceParticipants[roomId] = voiceMembers;
+                }
+
+                participants = voiceMembers
+                    .Where(participant => participant.Key != Context.ConnectionId)
+                    .Select(participant => (object)new
+                    {
+                        connectionId = participant.Key,
+                        nickname = participant.Value
+                    })
+                    .ToList();
+                voiceMembers[Context.ConnectionId] = nickname;
+            }
+
+            await Clients.Caller.SendAsync("VoiceParticipants", participants);
+        }
+
+        public async Task LeaveVoiceRoom(string roomId)
+        {
+            bool removed = false;
+
+            lock (_lock)
+            {
+                if (_voiceParticipants.TryGetValue(roomId, out var participants))
+                {
+                    removed = participants.Remove(Context.ConnectionId);
+                    if (participants.Count == 0)
+                    {
+                        _voiceParticipants.Remove(roomId);
+                    }
+                }
+            }
+
+            if (removed)
+            {
+                await Clients.OthersInGroup(roomId).SendAsync("VoiceUserLeft", Context.ConnectionId);
+            }
+        }
+
+        public async Task SendVoiceSignal(
+            string roomId,
+            string targetConnectionId,
+            string signalType,
+            JsonElement payload)
+        {
+            if (signalType is not ("offer" or "answer" or "candidate")
+                || payload.ValueKind != JsonValueKind.Object
+                || payload.GetRawText().Length > 65536)
+            {
+                throw new HubException("Tín hiệu voice chat không hợp lệ.");
+            }
+
+            string senderNickname;
+            lock (_lock)
+            {
+                if (!_voiceParticipants.TryGetValue(roomId, out var participants)
+                    || !participants.TryGetValue(Context.ConnectionId, out senderNickname!)
+                    || !participants.ContainsKey(targetConnectionId))
+                {
+                    throw new HubException("Chỉ thành viên đang tham gia voice chat mới được gửi tín hiệu.");
+                }
+            }
+
+            await Clients.Client(targetConnectionId).SendAsync("ReceiveVoiceSignal", new
+            {
+                fromConnectionId = Context.ConnectionId,
+                nickname = senderNickname,
+                signalType,
+                payload
+            });
         }
 
         private static List<object> GetOnlineUsers(string roomId)

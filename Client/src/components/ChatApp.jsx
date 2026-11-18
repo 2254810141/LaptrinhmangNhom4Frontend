@@ -5,7 +5,22 @@ import './ChatApp.css'
 const FORMATTED_MESSAGE_PREFIX = '[[chat-format-v1]]'
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉']
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
+const MAX_AUDIO_SIZE_BYTES = 10 * 1024 * 1024
+const MAX_AUDIO_DURATION_SECONDS = 120
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+const AUDIO_MIME_TYPES = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
+
+async function readApiResponse(response) {
+  const body = await response.text()
+  if (!body.trim()) return null
+
+  try {
+    return JSON.parse(body)
+  } catch {
+    if (!response.ok) return null
+    throw new Error('Máy chủ trả về dữ liệu không hợp lệ.')
+  }
+}
 
 function readFormattedMessage(content) {
   if (!content || !content.startsWith(FORMATTED_MESSAGE_PREFIX)) {
@@ -99,9 +114,17 @@ function ChatApp() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [isUploadingImage, setIsUploadingImage] = useState(false)
   const [imageUploadError, setImageUploadError] = useState('')
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false)
+  const [isUploadingAudio, setIsUploadingAudio] = useState(false)
+  const [audioUploadError, setAudioUploadError] = useState('')
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [activeReactionPicker, setActiveReactionPicker] = useState(null)
   const [showFormatting, setShowFormatting] = useState(false)
   const [showMobileSidebar, setShowMobileSidebar] = useState(false)
+  const [voiceState, setVoiceState] = useState('idle')
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false)
+  const [voiceError, setVoiceError] = useState('')
+  const [voiceParticipants, setVoiceParticipants] = useState([])
   const [textFormat, setTextFormat] = useState({
     color: '#e5e7eb',
     fontSize: 16,
@@ -114,14 +137,19 @@ function ChatApp() {
   const avatarInputRef = useRef(null)
   const imageInputRef = useRef(null)
   const messagesEndRef = useRef(null)
+  const recorderRef = useRef(null)
+  const recordingStreamRef = useRef(null)
+  const recordingChunksRef = useRef([])
+  const recordingStartedAtRef = useRef(0)
+  const recordingTimerRef = useRef(null)
+  const localAudioStreamRef = useRef(null)
+  const peerConnectionsRef = useRef(new Map())
+  const pendingIceCandidatesRef = useRef(new Map())
+  const voiceJoinedRef = useRef(false)
 
   const roomId = roomInfo.roomId
-<<<<<<< Updated upstream
-  const signalRUrl = import.meta.env.VITE_SIGNALR_URL || `http://${window.location.hostname}:5000/chathub`
-=======
   const signalRUrl = import.meta.env.VITE_SIGNALR_URL || 'http://localhost:5000/chathub'
   const apiBaseUrl = signalRUrl.replace(/\/chathub\/?$/i, '')
->>>>>>> Stashed changes
 
   const roomLabel = useMemo(() => roomInfo.displayName || 'Phòng chat', [roomInfo.displayName])
   const onlineMemberNames = useMemo(() => new Set(onlineUsers.map((user) => user.nickname)), [onlineUsers])
@@ -138,6 +166,42 @@ function ChatApp() {
         }),
     [knownMembers, memberFilter, onlineMemberNames],
   )
+
+  const cleanupVoiceLocally = (updateState = true) => {
+    peerConnectionsRef.current.forEach(({ peerConnection }) => peerConnection.close())
+    peerConnectionsRef.current.clear()
+    pendingIceCandidatesRef.current.clear()
+    localAudioStreamRef.current?.getTracks().forEach((track) => track.stop())
+    localAudioStreamRef.current = null
+    voiceJoinedRef.current = false
+    if (updateState) {
+      setVoiceParticipants([])
+      setIsVoiceMuted(false)
+      setVoiceState('idle')
+    }
+  }
+
+  const cleanupAudioRecording = () => {
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+
+    if (recorderRef.current) {
+      recorderRef.current.onstop = null
+      recorderRef.current.onerror = null
+      if (recorderRef.current.state !== 'inactive') recorderRef.current.stop()
+      recorderRef.current = null
+    }
+
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop())
+    recordingStreamRef.current = null
+    recordingChunksRef.current = []
+  }
+
+  useEffect(() => () => {
+    cleanupAudioRecording()
+  }, [])
 
   useEffect(() => {
     if (!showChat || !currentNickname) return undefined
@@ -169,7 +233,115 @@ function ChatApp() {
 
         activeConnection = newConnection
 
-        newConnection.onreconnecting(() => setIsConnected(false))
+        const sendVoiceSignal = async (targetConnectionId, signalType, payload) => {
+          if (newConnection.state !== signalR.HubConnectionState.Connected) return
+          await newConnection.invoke('SendVoiceSignal', roomId, targetConnectionId, signalType, payload)
+        }
+
+        const addPendingIceCandidates = async (peerConnection, peerId) => {
+          const candidates = pendingIceCandidatesRef.current.get(peerId) || []
+          pendingIceCandidatesRef.current.delete(peerId)
+          for (const candidate of candidates) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+          }
+        }
+
+        const createPeerConnection = async (peerId, peerNickname, shouldOffer = false) => {
+          const existingPeer = peerConnectionsRef.current.get(peerId)
+          if (existingPeer) return existingPeer.peerConnection
+
+          const peerConnection = new RTCPeerConnection({
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+            ],
+          })
+          peerConnectionsRef.current.set(peerId, { peerConnection, nickname: peerNickname })
+
+          localAudioStreamRef.current?.getTracks().forEach((track) => {
+            peerConnection.addTrack(track, localAudioStreamRef.current)
+          })
+
+          peerConnection.ontrack = (event) => {
+            const stream = event.streams[0]
+            if (!stream) return
+            setVoiceParticipants((participants) => {
+              const existing = participants.find((participant) => participant.connectionId === peerId)
+              if (existing) {
+                return participants.map((participant) =>
+                  participant.connectionId === peerId ? { ...participant, stream } : participant,
+                )
+              }
+              return [...participants, { connectionId: peerId, nickname: peerNickname, stream }]
+            })
+          }
+
+          peerConnection.onicecandidate = (event) => {
+            if (!event.candidate) return
+            sendVoiceSignal(peerId, 'candidate', event.candidate.toJSON()).catch((error) => {
+              console.error('Failed to send voice ICE candidate:', error)
+            })
+          }
+
+          peerConnection.onconnectionstatechange = () => {
+            if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'closed') {
+              if (peerConnection.connectionState === 'failed') {
+                setVoiceError('Không thể kết nối âm thanh trực tiếp. Mạng này có thể cần máy chủ TURN.')
+              }
+              peerConnection.close()
+              peerConnectionsRef.current.delete(peerId)
+              setVoiceParticipants((participants) =>
+                participants.filter((participant) => participant.connectionId !== peerId),
+              )
+            }
+          }
+
+          if (shouldOffer) {
+            const offer = await peerConnection.createOffer()
+            await peerConnection.setLocalDescription(offer)
+            await sendVoiceSignal(peerId, 'offer', peerConnection.localDescription.toJSON())
+          }
+
+          return peerConnection
+        }
+
+        const handleVoiceSignal = async ({ fromConnectionId, nickname, signalType, payload }) => {
+          try {
+            if (!voiceJoinedRef.current) return
+
+            if (signalType === 'candidate') {
+              const peer = peerConnectionsRef.current.get(fromConnectionId)
+              if (!peer || !peer.peerConnection.remoteDescription) {
+                const pending = pendingIceCandidatesRef.current.get(fromConnectionId) || []
+                pending.push(payload)
+                pendingIceCandidatesRef.current.set(fromConnectionId, pending)
+                return
+              }
+              await peer.peerConnection.addIceCandidate(new RTCIceCandidate(payload))
+              return
+            }
+
+            const peer = await createPeerConnection(fromConnectionId, nickname)
+            if (signalType === 'offer') {
+              await peer.setRemoteDescription(new RTCSessionDescription(payload))
+              await addPendingIceCandidates(peer, fromConnectionId)
+              const answer = await peer.createAnswer()
+              await peer.setLocalDescription(answer)
+              await sendVoiceSignal(fromConnectionId, 'answer', peer.localDescription.toJSON())
+            } else if (signalType === 'answer') {
+              await peer.setRemoteDescription(new RTCSessionDescription(payload))
+              await addPendingIceCandidates(peer, fromConnectionId)
+            }
+          } catch (error) {
+            console.error('Failed to handle voice signaling:', error)
+            setVoiceError('Không thể thiết lập kết nối âm thanh với thành viên này.')
+          }
+        }
+
+        newConnection.onreconnecting(() => {
+          setIsConnected(false)
+          cleanupVoiceLocally(false)
+        })
         newConnection.onreconnected(async () => {
           try {
             await newConnection.invoke('JoinRoom', roomId, currentNickname)
@@ -181,10 +353,32 @@ function ChatApp() {
         })
         newConnection.onclose((error) => {
           setIsConnected(false)
+          cleanupVoiceLocally()
           setConnection((current) => current === newConnection ? null : current)
           if (error) console.error('SignalR connection closed:', error)
           scheduleReconnect()
         })
+
+        newConnection.on('VoiceParticipants', (participants) => {
+          participants.forEach(({ connectionId, nickname }) => {
+            createPeerConnection(connectionId, nickname, true).catch((error) => {
+              console.error('Failed to create voice connection:', error)
+              setVoiceError('Không thể kết nối voice chat với thành viên này.')
+            })
+          })
+        })
+
+        newConnection.on('VoiceUserLeft', (connectionId) => {
+          const peer = peerConnectionsRef.current.get(connectionId)
+          peer?.peerConnection.close()
+          peerConnectionsRef.current.delete(connectionId)
+          pendingIceCandidatesRef.current.delete(connectionId)
+          setVoiceParticipants((participants) =>
+            participants.filter((participant) => participant.connectionId !== connectionId),
+          )
+        })
+
+        newConnection.on('ReceiveVoiceSignal', handleVoiceSignal)
 
         newConnection.on('RoomInfoLoaded', (room) => {
           setRoomInfo(room)
@@ -210,6 +404,8 @@ function ChatApp() {
               timestamp: data.timestamp,
               messageType: data.messageType || 'text',
               imageId: data.imageId || null,
+              audioId: data.audioId || null,
+              durationSeconds: data.durationSeconds || null,
               type: 'message',
               isMine: data.nickname === currentNickname,
               reactions: data.reactions || [],
@@ -229,6 +425,8 @@ function ChatApp() {
                 style: parsedMessage.style,
                 messageType: msg.messageType || msg.MessageType || 'text',
                 imageId: msg.imageId || msg.ImageId || null,
+                audioId: msg.audioId || msg.AudioId || null,
+                durationSeconds: msg.durationSeconds || msg.DurationSeconds || null,
                 type: 'message',
                 isMine: msg.nickname === currentNickname,
                 reactions: msg.reactions || msg.Reactions || [],
@@ -336,6 +534,7 @@ function ChatApp() {
       if (retryTimeout !== null) {
         window.clearTimeout(retryTimeout)
       }
+      cleanupVoiceLocally()
       if (activeConnection) {
         activeConnection.stop()
       }
@@ -393,6 +592,168 @@ function ChatApp() {
     }
   }
 
+  const handleJoinVoice = async () => {
+    if (!connection || !isConnected || voiceState !== 'idle') return
+
+    setVoiceError('')
+    setVoiceState('joining')
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Trình duyệt không hỗ trợ microphone hoặc cần mở trang bằng HTTPS.')
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      })
+      localAudioStreamRef.current = stream
+      voiceJoinedRef.current = true
+      await connection.invoke('JoinVoiceRoom', roomId)
+      setVoiceState('joined')
+    } catch (error) {
+      console.error('Error joining voice chat:', error)
+      cleanupVoiceLocally()
+      setVoiceError(error instanceof Error ? error.message : 'Không thể tham gia voice chat.')
+    }
+  }
+
+  const handleLeaveVoice = async () => {
+    try {
+      if (connection && voiceJoinedRef.current) {
+        await connection.invoke('LeaveVoiceRoom', roomId)
+      }
+    } catch (error) {
+      console.error('Error leaving voice chat:', error)
+    } finally {
+      cleanupVoiceLocally()
+      setVoiceError('')
+    }
+  }
+
+  const handleToggleVoiceMute = () => {
+    const nextMuted = !isVoiceMuted
+    localAudioStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !nextMuted
+    })
+    setIsVoiceMuted(nextMuted)
+  }
+
+  const handleStartAudioRecording = async () => {
+    if (!connection || !isConnected || isRecordingAudio || isUploadingAudio) return
+
+    setAudioUploadError('')
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setAudioUploadError('Trình duyệt không hỗ trợ ghi âm hoặc cần mở trang bằng HTTPS.')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mimeType = AUDIO_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type))
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+
+      recordingStreamRef.current = stream
+      recorderRef.current = recorder
+      recordingChunksRef.current = []
+      recordingStartedAtRef.current = Date.now()
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data)
+      }
+      recorder.onerror = (event) => {
+        console.error('Audio recording failed:', event.error)
+        setAudioUploadError('Không thể ghi âm. Vui lòng kiểm tra microphone và thử lại.')
+        recorder.onstop = null
+        stream.getTracks().forEach((track) => track.stop())
+        recordingStreamRef.current = null
+        recorderRef.current = null
+        setIsRecordingAudio(false)
+        if (recordingTimerRef.current !== null) {
+          window.clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+      }
+      recorder.onstop = async () => {
+        const durationSeconds = Math.min(
+          MAX_AUDIO_DURATION_SECONDS,
+          Math.max(1, Math.round((Date.now() - recordingStartedAtRef.current) / 1000)),
+        )
+        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        recordingChunksRef.current = []
+        stream.getTracks().forEach((track) => track.stop())
+        recordingStreamRef.current = null
+        recorderRef.current = null
+        setIsRecordingAudio(false)
+        setRecordingSeconds(0)
+        if (recordingTimerRef.current !== null) {
+          window.clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+
+        if (blob.size === 0) {
+          setAudioUploadError('Không ghi được âm thanh. Hãy thử ghi âm lâu hơn.')
+          return
+        }
+        if (blob.size > MAX_AUDIO_SIZE_BYTES) {
+          setAudioUploadError('Tin nhắn thoại phải nhỏ hơn hoặc bằng 10 MB.')
+          return
+        }
+        if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+          setAudioUploadError('Chat đã mất kết nối, không thể gửi tin nhắn thoại.')
+          return
+        }
+
+        try {
+          setIsUploadingAudio(true)
+          const extension = blob.type.includes('ogg') ? 'ogg' : blob.type.includes('mp4') ? 'm4a' : 'webm'
+          const formData = new FormData()
+          formData.append('file', blob, `voice-message.${extension}`)
+          const response = await fetch(`${apiBaseUrl}/api/audio`, { method: 'POST', body: formData })
+          const result = await readApiResponse(response)
+
+          if (!response.ok) {
+            throw new Error(
+              result?.error
+              || result?.title
+              || `API tin nhắn thoại không khả dụng (HTTP ${response.status}). Hãy khởi động lại backend.`,
+            )
+          }
+          if (typeof result?.id !== 'string') {
+            throw new Error('Backend chưa trả về mã tin nhắn thoại. Hãy khởi động lại backend.')
+          }
+
+          await connection.invoke('SendAudioMessage', roomId, currentNickname, result.id, durationSeconds)
+        } catch (error) {
+          console.error('Error uploading voice message:', error)
+          setAudioUploadError(error instanceof Error ? error.message : 'Không thể gửi tin nhắn thoại.')
+        } finally {
+          setIsUploadingAudio(false)
+        }
+      }
+
+      recorder.start(250)
+      setIsRecordingAudio(true)
+      recordingTimerRef.current = window.setInterval(() => {
+        const elapsed = Math.floor((Date.now() - recordingStartedAtRef.current) / 1000)
+        setRecordingSeconds(elapsed)
+        if (elapsed >= MAX_AUDIO_DURATION_SECONDS && recorder.state === 'recording') {
+          recorder.stop()
+        }
+      }, 250)
+    } catch (error) {
+      console.error('Unable to access microphone for voice message:', error)
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop())
+      recordingStreamRef.current = null
+      recorderRef.current = null
+      setAudioUploadError(error instanceof Error ? error.message : 'Không thể truy cập microphone.')
+    }
+  }
+
+  const handleStopAudioRecording = () => {
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.stop()
+    }
+  }
+
   const handleImageChange = async (event) => {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -421,10 +782,17 @@ function ChatApp() {
         method: 'POST',
         body: formData,
       })
-      const result = await response.json()
+      const result = await readApiResponse(response)
 
       if (!response.ok) {
-        throw new Error(result.error || result.title || 'Không thể tải ảnh lên.')
+        throw new Error(
+          result?.error
+          || result?.title
+          || `API tải ảnh không khả dụng (HTTP ${response.status}). Hãy khởi động lại backend.`,
+        )
+      }
+      if (typeof result?.id !== 'string') {
+        throw new Error('Backend chưa trả về mã ảnh. Hãy khởi động lại backend.')
       }
 
       await connection.invoke(
@@ -544,14 +912,21 @@ function ChatApp() {
   }
 
   const handleLogout = async () => {
+    cleanupAudioRecording()
     if (connection) {
       try {
+        if (voiceJoinedRef.current) {
+          await connection.invoke('LeaveVoiceRoom', roomId)
+        }
         await connection.invoke('LeaveRoom', roomId, currentNickname)
         await connection.stop()
       } catch (error) {
         console.error('Error leaving chat room:', error)
       }
     }
+    cleanupVoiceLocally()
+    setIsRecordingAudio(false)
+    setRecordingSeconds(0)
 
     window.localStorage.removeItem('chat.nickname')
     setConnection(null)
@@ -583,6 +958,13 @@ function ChatApp() {
 
   const formatTime = (timestamp) =>
     new Date(timestamp).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+
+  const formatAudioDuration = (durationSeconds) => {
+    const totalSeconds = Number(durationSeconds) || 0
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    return `${minutes}:${String(seconds).padStart(2, '0')}`
+  }
 
   const formatLastSeen = (timestamp) => {
     const lastSeenTime = new Date(timestamp).getTime()
@@ -849,6 +1231,36 @@ function ChatApp() {
                 <span className="room-online-dot" />
                 {onlineMemberCount} online
               </span>
+              <div className="voice-controls">
+                <button
+                  className={`voice-join-button ${voiceState === 'joined' ? 'active' : ''}`}
+                  type="button"
+                  onClick={voiceState === 'joined' ? handleLeaveVoice : handleJoinVoice}
+                  disabled={!isConnected || voiceState === 'joining'}
+                  aria-label={voiceState === 'joined' ? 'Rời voice chat' : 'Tham gia voice chat'}
+                >
+                  {voiceState === 'joining' ? 'Đang kết nối…' : voiceState === 'joined' ? '☎ Rời voice' : '🎙 Voice'}
+                </button>
+                {voiceState === 'joined' && (
+                  <>
+                    <button
+                      className={`voice-mute-button ${isVoiceMuted ? 'muted' : ''}`}
+                      type="button"
+                      onClick={handleToggleVoiceMute}
+                      aria-label={isVoiceMuted ? 'Bật microphone' : 'Tắt microphone'}
+                      aria-pressed={isVoiceMuted}
+                    >
+                      {isVoiceMuted ? 'Mic tắt' : 'Mic bật'}
+                    </button>
+                    <span
+                      className="voice-participant-count"
+                      title={voiceParticipants.map((participant) => participant.nickname).join(', ') || 'Chưa có người khác'}
+                    >
+                      {voiceParticipants.length + 1} đang thoại
+                    </span>
+                  </>
+                )}
+              </div>
               <button
                 className="icon-button room-menu-button"
                 type="button"
@@ -888,6 +1300,26 @@ function ChatApp() {
             </div>
           </header>
 
+          {voiceError && <div className="voice-error" role="alert">{voiceError}</div>}
+          {voiceParticipants.map((participant) => (
+            <audio
+              key={participant.connectionId}
+              ref={(element) => {
+                if (element && element.srcObject !== participant.stream) {
+                  element.srcObject = participant.stream
+                }
+              }}
+              autoPlay
+              playsInline
+              onCanPlay={(event) => {
+                event.currentTarget.play().catch((error) => {
+                  console.warn('Browser did not start remote voice audio:', error)
+                })
+              }}
+              aria-label={`Âm thanh từ ${participant.nickname}`}
+            />
+          ))}
+
           <div className="messages-area">
             {messages.length === 0 && (
               <div className="chat-welcome">
@@ -926,6 +1358,18 @@ function ChatApp() {
                           alt={`Ảnh được gửi bởi ${msg.nickname}`}
                           loading="lazy"
                         />
+                      ) : null}
+                      {msg.messageType === 'audio' && msg.audioId ? (
+                        <div className="audio-message">
+                          <audio
+                            className="message-audio"
+                            controls
+                            preload="metadata"
+                            src={`${apiBaseUrl}/api/audio/${encodeURIComponent(msg.audioId)}`}
+                            aria-label={`Tin nhắn thoại của ${msg.nickname}`}
+                          />
+                          <span>{formatAudioDuration(msg.durationSeconds)}</span>
+                        </div>
                       ) : null}
                       {msg.content && (
                         <div className={msg.messageType === 'image' ? 'image-caption' : undefined}>
@@ -1002,6 +1446,13 @@ function ChatApp() {
             />
             {isUploadingImage && <div className="image-upload-status" role="status">Đang tải ảnh lên...</div>}
             {imageUploadError && <div className="image-upload-error" role="alert">{imageUploadError}</div>}
+            {isRecordingAudio && (
+              <div className="audio-recording-status" role="status">
+                Đang ghi âm {formatAudioDuration(recordingSeconds)} / 2:00 · Nhấn nút micro để gửi
+              </div>
+            )}
+            {isUploadingAudio && <div className="image-upload-status" role="status">Đang gửi tin nhắn thoại...</div>}
+            {audioUploadError && <div className="image-upload-error" role="alert">{audioUploadError}</div>}
             {(showFormatting || messageInput.length > 0) && (
               <div className="formatting-toolbar" aria-label="Định dạng tin nhắn">
                 <label className="color-picker-control" title="Màu chữ">
@@ -1097,10 +1548,20 @@ function ChatApp() {
                 type="button"
                 aria-label="Tải ảnh lên"
                 title="Tải ảnh lên (tối đa 5 MB)"
-                disabled={isUploadingImage || !isConnected}
+                disabled={isUploadingImage || isUploadingAudio || isRecordingAudio || !isConnected}
                 onClick={() => imageInputRef.current?.click()}
               >
                 📎
+              </button>
+              <button
+                className={`composer-tool-button audio-record-button ${isRecordingAudio ? 'recording' : ''}`}
+                type="button"
+                aria-label={isRecordingAudio ? 'Dừng ghi âm và gửi' : 'Ghi tin nhắn thoại'}
+                title={isRecordingAudio ? 'Dừng và gửi tin nhắn thoại' : 'Ghi tin nhắn thoại (tối đa 2 phút)'}
+                disabled={isUploadingImage || isUploadingAudio || (!isRecordingAudio && !isConnected)}
+                onClick={isRecordingAudio ? handleStopAudioRecording : handleStartAudioRecording}
+              >
+                {isRecordingAudio ? '■' : '🎙'}
               </button>
               <button
                 className={`composer-tool-button ${showEmojiPicker ? 'active' : ''}`}

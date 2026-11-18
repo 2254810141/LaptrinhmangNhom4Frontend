@@ -24,6 +24,12 @@ namespace RealtimeChatAPI.Models
         [BsonElement("imageId")]
         public string? ImageId { get; set; }
 
+        [BsonElement("audioId")]
+        public string? AudioId { get; set; }
+
+        [BsonElement("durationSeconds")]
+        public int? DurationSeconds { get; set; }
+
         [BsonElement("timestamp")]
         public DateTime Timestamp { get; set; }
 
