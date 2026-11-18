@@ -8,6 +8,9 @@ namespace RealtimeChatAPI.Models
         [BsonId]
         public ObjectId Id { get; set; }
 
+        [BsonElement("messageId")]
+        public string MessageId { get; set; } = string.Empty;
+
         [BsonElement("nickname")]
         public string Nickname { get; set; } = string.Empty;
 
@@ -19,6 +22,20 @@ namespace RealtimeChatAPI.Models
 
         [BsonElement("roomId")]
         public string RoomId { get; set; } = string.Empty;
+
+        [BsonElement("reactions")]
+        public List<ChatReaction> Reactions { get; set; } = new();
+    }
+
+    public class ChatReaction
+    {
+        [BsonElement("nickname")]
+        public string Nickname { get; set; } = string.Empty;
+
+        [BsonElement("emoji")]
+        public string Emoji { get; set; } = string.Empty;
+
+        [BsonElement("createdAt")]
+        public DateTime CreatedAt { get; set; }
     }
 }
-
