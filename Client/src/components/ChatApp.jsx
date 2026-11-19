@@ -149,6 +149,7 @@ function ChatApp() {
 
   const roomId = roomInfo.roomId
   const signalRUrl = import.meta.env.VITE_SIGNALR_URL || 'https://laptrinhmangnhom4backend.onrender.com/chathub'
+  const apiBaseUrl = signalRUrl.replace('/chathub', '')
 
   const roomLabel = useMemo(() => roomInfo.displayName || 'Phòng chat', [roomInfo.displayName])
   const onlineMemberNames = useMemo(() => new Set(onlineUsers.map((user) => user.nickname)), [onlineUsers])
@@ -513,6 +514,11 @@ function ChatApp() {
 
         setConnection(newConnection)
         setIsConnected(true)
+
+        // Small delay to ensure connection is fully ready
+        await new Promise(resolve => setTimeout(resolve, 100))
+
+        console.log('Invoking JoinRoom with:', { roomId, currentNickname, state: newConnection.state })
         await newConnection.invoke('JoinRoom', roomId, currentNickname)
       } catch (error) {
         console.error('Connection failed:', error)
@@ -534,8 +540,8 @@ function ChatApp() {
         window.clearTimeout(retryTimeout)
       }
       cleanupVoiceLocally()
-      if (activeConnection) {
-        activeConnection.stop()
+      if (activeConnection && activeConnection.state !== signalR.HubConnectionState.Disconnected) {
+        activeConnection.stop().catch(console.error)
       }
     }
   }, [showChat, currentNickname, roomId, signalRUrl])
